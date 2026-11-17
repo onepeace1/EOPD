@@ -13,7 +13,9 @@ while :; do
   for f in $TRAINS; do
     [ -f $f ] || continue
     age=$(( $(date +%s) - $(stat -c %Y $f) ))
-    if [ $age -lt 900 ] && grep -qE "Traceback|OutOfMemory|CUDA out of memory" <(tail -c 200000 $f); then
+    tb=$(tail -c 200000 $f | grep -cE "Traceback|OutOfMemory|CUDA out of memory")
+    ig=$(tail -c 200000 $f | grep -c "Exception ignored in")   # harmless dataloader __del__ noise at shutdown
+    if [ $age -lt 900 ] && [ $tb -gt $ig ]; then
       reason="crash signature in $f"; break 2; fi
     if [ $age -gt 1200 ] && [ $age -lt 3600 ]; then reason="stall: $f silent for ${age}s"; break 2; fi
   done
