@@ -38,7 +38,8 @@ EXP=qwen3_1p7b_math_${MODE}
 RUN_DIR=$ROOT/runs/$EXP
 mkdir -p "$RUN_DIR"
 
-export RAY_TMPDIR=/tmp/ray_eopd_gpu${CUDA_VISIBLE_DEVICES}
+# fresh Ray dir per launch so a dying earlier launch can't take this one down
+export RAY_TMPDIR=/tmp/ray_eopd_gpu${CUDA_VISIBLE_DEVICES}_${MODE}_$(date +%s)
 export RAY_USAGE_STATS_ENABLED=0 RAY_memory_usage_threshold=0.99
 export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=true HYDRA_FULL_ERROR=1 NCCL_DEBUG=WARN
 export VERL_FILE_LOGGER_PATH=$RUN_DIR/metrics.jsonl
@@ -83,6 +84,7 @@ python3 -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.checkpoint.save_contents="['model','optimizer','extra','hf_model']" \
   +actor_rollout_ref.ref.topk_logits=16 \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
+  actor_rollout_ref.ref.fsdp_config.model_dtype=bfloat16 \
   actor_rollout_ref.ref.log_prob_use_dynamic_bsz=True \
   actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=16384 \
   actor_rollout_ref.rollout.name=vllm \

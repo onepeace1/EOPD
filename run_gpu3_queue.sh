@@ -4,6 +4,9 @@
 ROOT=$(cd "$(dirname "$0")" && pwd)
 cd "$ROOT"
 export GPU=${GPU:-3}
+mkdir -p runs
+exec 9> runs/queue_gpu${GPU}.lock
+flock -n 9 || { echo "another queue already holds GPU $GPU - not starting"; exit 1; }
 
 latest_hf() {  # HF weights of the last saved step
   local d; d=$(ls -d "$ROOT/runs/$1/ckpt"/global_step_* 2>/dev/null | sort -V | tail -1)
