@@ -4,7 +4,7 @@
 cd "$(dirname "$0")/.."
 HB=${1:-7200}
 QUEUES="runs/queue_4b.log runs/post_gpu3.log"
-TRAINS="runs/train_4b_opd.log runs/train_4b_eopd.log runs/train_eopd.log"
+TRAINS=${TRAINS:-"runs/train_4b_opd.log runs/train_4b_eopd.log"}   # only logs of runs still training
 sig() { for f in $QUEUES; do [ -f $f ] && wc -l < $f; done | paste -sd,; }
 s0=$(sig); t0=$(date +%s); reason=""
 while :; do
