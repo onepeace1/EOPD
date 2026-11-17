@@ -42,7 +42,7 @@ export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=true HYDRA_FULL_ERROR=1 NCCL_DE
 export VERL_FILE_LOGGER_PATH=$RUN_DIR/metrics.jsonl
 export TENSORBOARD_DIR=$RUN_DIR/tb
 
-MAX_PROMPT=1024
+MAX_PROMPT=2048   # longest MATH-train prompt is 1,681 tokens: keep all 7,500 so 250 | 7,500
 MAX_RESP=4096
 
 python3 -m recipe.dapo.main_dapo ${DRY:+--cfg job} \

@@ -973,7 +973,6 @@ class RayPPOTrainer:
             teacher_model_path = self.config.actor_rollout_ref.get("teacher_model", {}).get("path", None)
             if teacher_model_path is not None:
                 # Use teacher model config instead of actor config
-                from omegaconf import OmegaConf
                 teacher_config = OmegaConf.create(OmegaConf.to_container(self.config.actor_rollout_ref))
                 teacher_config.model.path = teacher_model_path
                 # Teacher model should not have optimizer
