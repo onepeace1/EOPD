@@ -129,3 +129,8 @@ logs
 log
 outputs
 .history
+# reproduction outputs (large, machine-local)
+runs/
+data/math/
+actor_debug_rank_*.jsonl
+on_policy_soft_kd_debug_rank_*.jsonl

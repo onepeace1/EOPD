@@ -482,12 +482,58 @@ class RayPPOTrainer:
         lines = []
         for i in range(n):
             entry = {k: v[i] for k, v in base_data.items()}
-            lines.append(json.dumps(entry, ensure_ascii=False))
+            lines.append(json.dumps(entry, ensure_ascii=False,
+                                    default=lambda o: o.tolist() if hasattr(o, "tolist") else str(o)))
 
         with open(filename, "w") as f:
             f.write("\n".join(lines) + "\n")
 
         print(f"Dumped generations to {filename}")
+
+    def _early_token_stats(self, batch: DataProto, n_early: int, n_alt: int = 5) -> dict:
+        """Per-sample stats for the first `n_early` response tokens, for the rollout dump.
+
+        Each token: text, student prob (pre-update policy that sampled it), teacher prob,
+        teacher entropy (full vocab), and the teacher's top-`n_alt` alternatives.
+        """
+        b = batch.batch
+        resp = b["responses"]
+        resp_len = resp.shape[1]
+        mask = b["response_mask"] if "response_mask" in b.keys() else b["attention_mask"][:, -resp_len:]
+        stu = b["old_log_probs"] if "old_log_probs" in b.keys() else None
+        tch = b["ref_log_prob"] if "ref_log_prob" in b.keys() else None
+        ent = b["ref_entropy"] if "ref_entropy" in b.keys() else None
+        topk_lp = b["ref_topk_log_probs"][:, -resp_len:] if "ref_topk_log_probs" in b.keys() else None
+        topk_id = b["ref_topk_indices"][:, -resp_len:] if "ref_topk_indices" in b.keys() else None
+
+        def r(x):
+            return round(float(x), 4)
+
+        rows, means = [], {"early_student_p": [], "early_teacher_p": [], "early_teacher_entropy": []}
+        for i in range(resp.shape[0]):
+            L = min(n_early, int(mask[i].sum().item()))
+            toks = []
+            for t in range(L):
+                d = {"tok": self.tokenizer.decode([int(resp[i, t])])}
+                if stu is not None:
+                    d["p_student"] = r(torch.exp(stu[i, t]))
+                if tch is not None:
+                    d["p_teacher"] = r(torch.exp(tch[i, t]))
+                if ent is not None:
+                    d["H_teacher"] = r(ent[i, t])
+                if topk_lp is not None and topk_id is not None:
+                    # top-k log-probs are renormalised over the teacher's top-16
+                    d["teacher_top"] = [
+                        [self.tokenizer.decode([int(topk_id[i, t, j])]), r(torch.exp(topk_lp[i, t, j]))]
+                        for j in range(min(n_alt, topk_id.shape[-1]))
+                    ]
+                toks.append(d)
+            rows.append(toks)
+            for key, src in (("early_student_p", "p_student"), ("early_teacher_p", "p_teacher"),
+                             ("early_teacher_entropy", "H_teacher")):
+                vals = [d[src] for d in toks if src in d]
+                means[key].append(r(sum(vals) / len(vals)) if vals else None)
+        return {"early_tokens": rows, **means}
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
@@ -514,6 +560,9 @@ class RayPPOTrainer:
                     reward_extra_infos_dict["partial_solution_length"] = partial_solution_lengths
 
             reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
+            n_early = int(self.config.trainer.get("rollout_early_tokens", 0) or 0)
+            if n_early > 0:
+                reward_extra_infos_to_dump.update(self._early_token_stats(batch, n_early))
             if "request_id" in batch.non_tensor_batch:
                 reward_extra_infos_dict.setdefault(
                     "request_id",

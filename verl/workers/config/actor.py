@@ -176,6 +176,12 @@ class ActorConfig(BaseConfig):
     model_config: HFModelConfig = field(default_factory=BaseConfig)
     router_replay: RouterReplayConfig = field(default_factory=RouterReplayConfig)
 
+    # EOPD (on_policy_distill loss): forward-KL term on tokens whose teacher entropy >= threshold.
+    # Defaults are the paper's alpha=1.0, tau=0.8. soft_kd_loss_coef=0.0 gives plain (reverse-KL) OPD.
+    soft_kd_loss_coef: float = 1.0
+    soft_kd_entropy_threshold: float = 0.8
+    high_entropy_threshold: float = 0.8
+
     # Store global batch info for loss aggregation:
     # dp_size: data parallel size
     # batch_num_tokens: number of valid tokens in global batch

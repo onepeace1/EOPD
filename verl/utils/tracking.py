@@ -247,7 +247,14 @@ class FileLogger:
 
     def log(self, data, step):
         data = {"step": step, "data": data}
-        self.fp.write(json.dumps(data) + "\n")
+
+        def _np(o):  # numpy scalars/arrays (e.g. val-aux/num_turns/min is np.int32)
+            if hasattr(o, "tolist"):
+                return o.tolist()
+            return str(o)
+
+        self.fp.write(json.dumps(data, default=_np) + "\n")
+        self.fp.flush()
 
     def finish(self):
         self.fp.close()
