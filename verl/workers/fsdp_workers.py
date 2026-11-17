@@ -505,9 +505,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         sharding_strategy = get_sharding_strategy(fsdp_mesh, fsdp_enable_zero3)
 
         # TODO: add transformer policy
-        # We force reference policy to use CPUOffload to save memory.
-        # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
-        cpu_offload = None if role == "actor" else CPUOffload(offload_params=True)
+        # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation.
+        # Reference/teacher: no FSDP CPUOffload either. FSDP1 CPUOffload keeps the params on CPU and streams the
+        # whole model over PCIe on every micro-batch (154 s/step for an 8B teacher on one GPU). With
+        # ref.fsdp_config.param_offload=True the teacher is instead moved to GPU once per compute_ref_log_prob
+        # call and back to CPU afterwards (see compute_ref_log_prob / init_model).
+        cpu_offload = None
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
             actor_module_fsdp = FSDP(
@@ -853,6 +856,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 self.config.ref.use_remove_padding = use_remove_padding
                 self.config.ref.use_fused_kernels = use_fused_kernels
             self.ref_policy = DataParallelPPOActor(config=self.config.ref, actor_module=self.ref_module_fsdp)
+            if self._is_offload_param:
+                offload_fsdp_model_to_cpu(self.ref_module_fsdp)
+                log_gpu_memory_usage("After offload ref model during init", logger=logger)
 
         if self._is_actor:
             self.flops_counter = FlopsCounter(self.actor_model_config)
@@ -1029,6 +1035,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         assert self._is_ref
         # else:
         # otherwise, the class have a standalone ref model
+        if self._is_offload_param:
+            load_fsdp_model_to_gpu(self.ref_module_fsdp)
 
         micro_batch_size = self.config.ref.log_prob_micro_batch_size_per_gpu
         data.meta_info["micro_batch_size"] = micro_batch_size
