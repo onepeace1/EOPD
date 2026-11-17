@@ -5,6 +5,7 @@ DAPO-Math-17k has no difficulty labels, so difficulty is measured: the untrained
 4096 tokens, same chat template) and its pass rate sets the bin:
     hard   = 0/K correct      medium = 1..K/2 correct      easy = > K/2 correct
 
+  python data/prep_dapo_4b.py full                    # PAPER SETUP: train_full.parquet + 100-question probe
   python data/prep_dapo_4b.py score --gpus 0,2,5,6     # ~15 min, writes data/dapo17k/pool_scores.jsonl
   python data/prep_dapo_4b.py build --steps 50         # writes train.parquet / probe.parquet / summary.json
 
@@ -144,9 +145,34 @@ def cmd_build(a):
     print(json.dumps(summary, indent=2))
 
 
+def cmd_full(a):
+    """Paper setup (EOPD Table 9, 4B student: DAPO, 2 epochs, shuffled): train on all of DAPO-Math-17k except a
+    random held-out probe set. No scoring needed - probe difficulty is read off the step-0 validation instead."""
+    os.makedirs(OUT, exist_ok=True)
+    df = load_src()
+    perm = np.random.RandomState(a.seed).permutation(len(df))
+    probe_ids, train_ids = perm[:a.probe], perm[a.probe:]
+
+    def rows(ids, split):
+        return pd.DataFrame([{"data_source": "DAPO-probe" if split == "probe" else "DAPO",
+                              "prompt": list(df.prompt[i]), "ability": "math",
+                              "reward_model": {"style": "rule", "ground_truth": str(df.reward_model[i]["ground_truth"])},
+                              "extra_info": {"split": split, "index": df.uid[i]}} for i in ids])
+    rows(train_ids, "train").to_parquet(f"{OUT}/train_full.parquet")
+    # verl concatenates val sets with HF datasets: the probe must match MATH-500/AIME24's schema exactly
+    import pyarrow as pa, pyarrow.parquet as pq
+    schema = pq.read_schema(os.path.expanduser("~/Rethinking-OPD/datasets/test_data/MATH-500/test.parquet"))
+    pr = rows(probe_ids, "probe")
+    pr["source"], pr["id"] = "dapo-math", [df.uid[i] for i in probe_ids]
+    pq.write_table(pa.Table.from_pandas(pr[schema.names], schema=schema.remove_metadata(), preserve_index=False),
+                   f"{OUT}/probe.parquet")
+    print(json.dumps({"train": len(train_ids), "probe": len(probe_ids),
+                      "steps_per_epoch": len(train_ids) // BATCH}, indent=2))
+
+
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=["score", "shard", "build"])
+    p.add_argument("cmd", choices=["score", "shard", "build", "full"])
     p.add_argument("--gpus", default="0,2,5,6")
     p.add_argument("--pool", type=int, default=8192)
     p.add_argument("--k", type=int, default=4)
@@ -156,5 +182,6 @@ if __name__ == "__main__":
     p.add_argument("--steps", type=int, default=50)
     p.add_argument("--probe_per_bin", type=int, default=20)
     p.add_argument("--max_prompt", type=int, default=2048)
+    p.add_argument("--probe", type=int, default=100)
     a = p.parse_args()
-    {"score": cmd_score, "shard": cmd_shard, "build": cmd_build}[a.cmd](a)
+    {"score": cmd_score, "shard": cmd_shard, "build": cmd_build, "full": cmd_full}[a.cmd](a)

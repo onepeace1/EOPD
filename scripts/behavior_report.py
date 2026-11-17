@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TB = os.path.expanduser("~/Rethinking-OPD/datasets/test_data")
 VAL_SETS = {"MATH-500": f"{TB}/MATH-500/test.parquet", "AIME24": f"{TB}/AIME24/test.parquet",
             "DAPO-probe": f"{ROOT}/data/dapo17k/probe.parquet"}
-TRAIN = f"{ROOT}/data/dapo17k/train.parquet"
+TRAIN = f"{ROOT}/data/dapo17k/train_full.parquet"
 MAX_RESP = 4096
 
 
@@ -98,7 +98,8 @@ def train_rows(run, match, tok):
             q = match(r["input"])
             n_tok = len(tok(r["output"], add_special_tokens=False).input_ids) if tok else len(r["output"]) / 3.5
             et = r.get("early_tokens") or []
-            rows.append({"step": st, "bin": q["bin"] if q else "?", "score": float(r["score"]), "len": n_tok,
+            rows.append({"step": st, "qid": q["qid"] if q else None, "bin": q["bin"] if q else "?",
+                         "score": float(r["score"]), "len": n_tok,
                          "boxed": has_boxed(r["output"]), "trunc": n_tok >= MAX_RESP - 1,
                          "p_student": np.mean([t["p_student"] for t in et]) if et else np.nan,
                          "p_teacher": np.mean([t["p_teacher"] for t in et]) if et else np.nan,
@@ -147,11 +148,16 @@ def main():
         L += [f"## {name}", ""]
         v = val_rows(run, vmatch, tok)
         if len(v):
-            v["run"] = name; all_val.append(v)
+            v["run"] = name
+            if (v.bin == "-").all():   # no precomputed difficulty: bin by the base model's step-0 mean@4
+                s0 = v[v.step == v.step.min()].groupby("qid").score.mean()
+                b0 = s0.map(lambda x: "hard" if x == 0 else ("medium" if x <= 0.5 else "easy"))
+                v["bin"] = v.qid.map(b0).fillna("-")
+            all_val.append(v)
             L += ["### 1. Fixed validation questions, per step", "", md(agg(v, ["source", "step"])), ""]
             p = v[v.source == "DAPO-probe"]
             if len(p):
-                L += ["DAPO-probe by difficulty bin (bin = base-model pass rate before training):", "",
+                L += ["DAPO-probe by difficulty bin (bin = pass rate before training: hard 0/4, medium <=2/4, easy >2/4):", "",
                       md(agg(p, ["bin", "step"])), ""]
             qa = v.groupby(["qid", "source", "step"]).score.mean().unstack("step")
             first, last = qa.columns.min(), qa.columns.max()
@@ -192,6 +198,18 @@ def main():
                   md(tb.agg(score=("score", "mean"), len=("len", "mean"), trunc=("trunc", "mean"),
                             n=("score", "size")).reset_index()), ""]
             g.to_csv(f"{base}_{name}_train_per_step.csv", index=False)
+            # every training problem is seen once per epoch: same question, epoch 1 vs epoch 2
+            t = t.dropna(subset=["qid"]).sort_values("step")
+            t["visit"] = t.groupby("qid").cumcount() + 1
+            w = t[t.visit <= 2].pivot_table(index="qid", columns="visit", values=["score", "len"])
+            if ("score", 2) in w.columns:
+                w = w.dropna()
+                s1, s2 = w[("score", 1)], w[("score", 2)]
+                L += ["### 3b. Training problems seen twice (epoch 1 -> epoch 2, same question)", "",
+                      md(pd.DataFrame([{"problems": len(w), "acc epoch1": s1.mean(), "acc epoch2": s2.mean(),
+                                        "wrong->right": int(((s1 == 0) & (s2 > 0)).sum()),
+                                        "right->wrong": int(((s1 > 0) & (s2 == 0)).sum()),
+                                        "len epoch1": w[("len", 1)].mean(), "len epoch2": w[("len", 2)].mean()}])), ""]
 
     if all_val:
         V = pd.concat(all_val)

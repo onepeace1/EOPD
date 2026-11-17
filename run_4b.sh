@@ -4,15 +4,17 @@
 #   bash run_4b.sh opd     # naive on-policy distillation: reverse KL only
 #   bash run_4b.sh eopd    # EOPD: + forward KL (teacher top-16) where teacher entropy >= 0.8
 #
-# Same objective/hyper-parameters as run_1p7b.sh (paper Table 9: batch 128, mini-batch 32, 1 sample/prompt,
-# lr 3e-6 cosine, T=1.0, top-p 1.0, max response 4096, top-k 16). Differences:
-#   data   data/dapo17k/train.parquet from data/prep_dapo_4b.py: 50 x 128 = 6,400 prompts, kept IN ORDER
-#          (data.shuffle=False) so every step's batch holds the same hard/medium/easy quota
-#   steps  STEPS (50) instead of 3 epochs
-#   val    every TEST_FREQ steps, 4 samples per question, on the SAME fixed questions:
-#          MATH-500, AIME24, and DAPO-probe (60 held-out DAPO problems, 20 per difficulty bin)
-#          -> scripts/behavior_report.py tracks per-question changes across steps
-# Env overrides: GPUS (default 0,2,5,6), TEACHER, STUDENT, STEPS, SAVE_FREQ, TEST_FREQ, EARLY_TOKENS.
+# Paper setup (EOPD, arXiv 2603.07079, Sec 5.1 + Table 9, 4B student): DAPO data, 2 epochs, batch 128,
+# mini-batch 32 (4 updates/step), 1 sample/prompt, lr 3e-6 cosine, T=1.0, top-p 1.0, max response 4096,
+# forward-KL top-k 16, entropy threshold 0.8, alpha 1.0, Qwen3-8B non-thinking teacher.
+#   data   data/dapo17k/train_full.parquet (python data/prep_dapo_4b.py full): DAPO-Math-17k minus a
+#          100-question random held-out probe -> 17,298 prompts, shuffled, 135 steps/epoch, 270 steps total
+#          (the paper's table says "DAPO-Math-14k"; its exact subset is not given, we use the 17,398-problem set)
+#   val    every TEST_FREQ (30) steps, 4 samples per question, on the SAME fixed questions:
+#          MATH-500, AIME24, DAPO-probe -> scripts/behavior_report.py tracks per-question changes
+#   ckpt   every SAVE_FREQ (50) steps + final, latest 2 kept (~56 GB each). 50 avoids saving at the epoch
+#          boundary (step 135), where verl's restored dataloader is exhausted and a resume exits silently.
+# Env overrides: GPUS (default 0,2,5,6), TEACHER, STUDENT, SAVE_FREQ, TEST_FREQ, EARLY_TOKENS.
 set -euo pipefail
 MODE=${1:?usage: run_4b.sh opd|eopd}
 case "$MODE" in
@@ -30,9 +32,8 @@ export CUDA_VISIBLE_DEVICES=${GPUS:-0,2,5,6}
 NGPU=$(awk -F, '{print NF}' <<<"$CUDA_VISIBLE_DEVICES")
 STUDENT=${STUDENT:-Qwen/Qwen3-4B-Base}
 TEACHER=${TEACHER:-Qwen/Qwen3-8B}
-STEPS=${STEPS:-50}
-SAVE_FREQ=${SAVE_FREQ:-25}
-TEST_FREQ=${TEST_FREQ:-10}
+SAVE_FREQ=${SAVE_FREQ:-50}
+TEST_FREQ=${TEST_FREQ:-30}
 TB=$HOME/Rethinking-OPD/datasets/test_data
 
 EXP=qwen3_4b_dapo17k_${MODE}
@@ -55,9 +56,9 @@ python3 -m verl.trainer.main_ppo \
   algorithm.adv_estimator=on_policy \
   algorithm.use_kl_in_reward=False \
   +trainer.trainer_class=OnPolicyDistillTrainer \
-  data.train_files="$ROOT/data/dapo17k/train.parquet" \
+  data.train_files="$ROOT/data/dapo17k/train_full.parquet" \
   data.val_files="['$TB/MATH-500/test.parquet','$TB/AIME24/test.parquet','$ROOT/data/dapo17k/probe.parquet']" \
-  data.shuffle=False \
+  data.shuffle=True \
   data.train_batch_size=128 \
   data.max_prompt_length=$MAX_PROMPT \
   data.max_response_length=$MAX_RESP \
@@ -112,8 +113,8 @@ python3 -m verl.trainer.main_ppo \
   trainer.default_local_dir="$RUN_DIR/ckpt" \
   trainer.n_gpus_per_node=$NGPU \
   trainer.nnodes=1 \
-  trainer.total_epochs=1 \
-  trainer.total_training_steps=$STEPS \
+  trainer.total_epochs=2 \
+  trainer.max_actor_ckpt_to_keep=2 \
   trainer.save_freq=$SAVE_FREQ \
   trainer.test_freq=$TEST_FREQ \
   trainer.val_before_train=True \

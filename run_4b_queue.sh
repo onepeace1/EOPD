@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 4B queue on GPUs 0,2,5,6: (wait for difficulty scoring) -> build data -> OPD -> EOPD -> eval base/OPD/EOPD.
+# 4B queue on GPUs 0,2,5,6 (paper setup, DAPO-17k, 2 epochs): data -> OPD -> EOPD -> eval base/OPD/EOPD -> report.
 # Launch fully detached:
 #   (setsid nohup bash ~/EOPD/run_4b_queue.sh > ~/EOPD/runs/queue_4b.log 2>&1 < /dev/null &)
 ROOT=$(cd "$(dirname "$0")" && pwd)
@@ -11,11 +11,7 @@ flock -n 9 || { echo "another 4B queue is running - not starting"; exit 1; }
 source "$HOME/Rethinking-OPD/.venv/bin/activate"
 export PYTHONPATH="$ROOT"
 
-echo "== [$(date)] waiting for difficulty scoring"
-while pgrep -f "prep_dapo_4[b].py (score|shard)" >/dev/null; do sleep 30; done
-[ -s data/dapo17k/pool_scores.jsonl ] || { echo "== no pool_scores.jsonl - scoring failed"; exit 1; }
-echo "== [$(date)] BUILD"
-python data/prep_dapo_4b.py build --steps ${STEPS:-50} || { echo "== BUILD FAILED"; exit 1; }
+[ -s data/dapo17k/train_full.parquet ] || python data/prep_dapo_4b.py full || { echo "== DATA PREP FAILED"; exit 1; }
 
 latest_hf() { d=$(ls -d "$ROOT/runs/$1/ckpt"/global_step_* 2>/dev/null | sort -V | tail -1); echo "$d/actor/huggingface"; }
 
@@ -24,7 +20,10 @@ for MODE in opd eopd; do
   bash run_4b.sh $MODE > runs/train_4b_$MODE.log 2>&1
   rc=$?
   echo "== [$(date)] TRAIN $MODE exited rc=$rc"
-  if [ $rc -ne 0 ] || [ ! -d "$ROOT/runs/qwen3_4b_dapo17k_$MODE/ckpt/global_step_${STEPS:-50}" ]; then
+  total=$(grep -oE "Total training steps: [0-9]+" runs/train_4b_$MODE.log | tail -1 | grep -oE "[0-9]+$")
+  last=$(cat "$ROOT/runs/qwen3_4b_dapo17k_$MODE/ckpt/latest_checkpointed_iteration.txt" 2>/dev/null)
+  # verl can exit 0 without training (e.g. exhausted dataloader on resume): require the final checkpoint
+  if [ $rc -ne 0 ] || [ -z "$total" ] || [ "$last" != "$total" ]; then
     echo "== [$(date)] TRAIN $MODE FAILED (no final checkpoint) - stopping queue"; exit 1
   fi
 done
